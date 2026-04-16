@@ -1,0 +1,83 @@
+name: Build And Release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - rel
+      - rel*
+      - v*
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/bin dist/release
+
+          services=("api-gateway" "auth-service" "user-service" "wallet-service" "notification-service")
+          targets=("linux/amd64" "windows/amd64" "darwin/amd64" "darwin/arm64")
+
+          for service in "${services[@]}"; do
+            for target in "${targets[@]}"; do
+              IFS='/' read -r goos goarch <<< "$target"
+              ext=""
+              if [ "$goos" = "windows" ]; then
+                ext=".exe"
+              fi
+
+              output="dist/bin/${service}-${goos}-${goarch}${ext}"
+              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="-s -w" -o "$output" "./services/${service}/cmd"
+            done
+          done
+
+      - name: Package release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git archive --format=zip --output="dist/release/fintech-source.zip" HEAD
+
+          for file in dist/bin/*; do
+            [ -f "$file" ] || continue
+            base="$(basename "$file")"
+            zip -j "dist/release/${base}.zip" "$file"
+          done
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fintech-build-artifacts
+          path: dist/release/*.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/release/*.zip
+          generate_release_notes: true
+          overwrite_files: true

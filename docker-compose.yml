@@ -1,0 +1,173 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fintech
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fintech"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.9
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "512M"
+      - --reserve-memory
+      - "0M"
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q \"Healthy:[[:space:]]*true\""]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: build/Dockerfile
+      args:
+        SERVICE: auth-service
+    environment:
+      SERVICE_NAME: auth-service
+      HTTP_PORT: "8081"
+      GRPC_PORT: "9081"
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/fintech?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC_NOTIFICATIONS: notifications.v1
+      JWT_SECRET: super-secret-change-this
+      JWT_TTL: 24h
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+      - "9081:9081"
+
+  user-service:
+    build:
+      context: .
+      dockerfile: build/Dockerfile
+      args:
+        SERVICE: user-service
+    environment:
+      SERVICE_NAME: user-service
+      HTTP_PORT: "8082"
+      GRPC_PORT: "9082"
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/fintech?sslmode=disable
+      REDIS_ADDR: redis:6379
+      JWT_SECRET: super-secret-change-this
+      JWT_TTL: 24h
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8082:8082"
+      - "9082:9082"
+
+  wallet-service:
+    build:
+      context: .
+      dockerfile: build/Dockerfile
+      args:
+        SERVICE: wallet-service
+    environment:
+      SERVICE_NAME: wallet-service
+      HTTP_PORT: "8083"
+      GRPC_PORT: "9083"
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/fintech?sslmode=disable
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC_NOTIFICATIONS: notifications.v1
+      JWT_SECRET: super-secret-change-this
+      JWT_TTL: 24h
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+      - "9083:9083"
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: build/Dockerfile
+      args:
+        SERVICE: notification-service
+    environment:
+      SERVICE_NAME: notification-service
+      HTTP_PORT: "8084"
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_TOPIC_NOTIFICATIONS: notifications.v1
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    ports:
+      - "8084:8084"
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: build/Dockerfile
+      args:
+        SERVICE: api-gateway
+    environment:
+      SERVICE_NAME: api-gateway
+      HTTP_PORT: "8080"
+      AUTH_GRPC_ADDR: auth-service:9081
+      USER_GRPC_ADDR: user-service:9082
+      WALLET_GRPC_ADDR: wallet-service:9083
+      JWT_SECRET: super-secret-change-this
+      JWT_TTL: 24h
+      RATE_LIMIT_RPS: 200
+      RATE_LIMIT_BURST: 400
+    depends_on:
+      auth-service:
+        condition: service_started
+      user-service:
+        condition: service_started
+      wallet-service:
+        condition: service_started
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:

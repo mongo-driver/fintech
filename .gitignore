@@ -1,0 +1,23 @@
+# binaries
+bin/
+dist/
+*.exe
+*.out
+
+# env
+.env
+
+# coverage
+coverage.out
+coverage.html
+
+# local go caches
+.gocache/
+.gomodcache/
+.gopath/
+
+# editor/system
+.idea/
+.vscode/
+*.swp
+Thumbs.db
